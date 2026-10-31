@@ -1,0 +1,688 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>کوئیز آنلاین درسی - عطا اسکندری</title>
+  <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;600;700;900&display=swap" rel="stylesheet">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/js/all.min.js"></script>
+
+  <style>
+    :root {
+      --board-green: #1b3b2b;
+      --board-border: #8b5a2b;
+      --accent-yellow: #f1c40f;
+      --danger-red: #e74c3c;
+      --success-green: #2ecc71;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: 'Vazirmatn', sans-serif;
+      user-select: none;
+    }
+
+    body {
+      background-color: #0d1117;
+      color: #fff;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .bg-classroom {
+      position: fixed;
+      top: 0; left: 0; width: 100%; height: 100%;
+      background: linear-gradient(rgba(0, 0, 0, 0.75), rgba(0, 0, 0, 0.85)),
+                  url('https://images.unsplash.com/photo-1580582932707-520aed937b7b?auto=format&fit=crop&w=1920&q=80') center/cover no-repeat;
+      z-index: 1;
+      filter: blur(2px);
+      transform: scale(1.05);
+    }
+
+    .particles {
+      position: fixed;
+      top: 0; left: 0; width: 100%; height: 100%;
+      z-index: 2;
+      pointer-events: none;
+      background: radial-gradient(circle, rgba(255,255,255,0.05) 1px, transparent 1px);
+      background-size: 20px 20px;
+    }
+
+    .app-container {
+      position: relative;
+      z-index: 10;
+      width: 95%;
+      max-width: 500px;
+      height: 90vh;
+      max-height: 800px;
+      background: rgba(27, 59, 43, 0.95);
+      border: 12px solid var(--board-border);
+      border-radius: 20px;
+      box-shadow: 0 20px 50px rgba(0,0,0,0.8), inset 0 0 30px rgba(0,0,0,0.5);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .screen {
+      display: none;
+      flex-direction: column;
+      height: 100%;
+      padding: 20px;
+      justify-content: space-between;
+      align-items: center;
+      text-align: center;
+      animation: fadeIn 0.4s ease-in-out;
+    }
+
+    .screen.active { display: flex; }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .chalk-title {
+      font-size: 22px;
+      font-weight: 900;
+      color: #fff;
+      text-shadow: 0 0 10px rgba(255,255,255,0.8), 2px 2px 0 #000;
+      border-bottom: 3px dashed rgba(255,255,255,0.4);
+      padding-bottom: 8px;
+    }
+
+    .loading-sub {
+      font-size: 14px;
+      color: var(--accent-yellow);
+      background: rgba(0,0,0,0.4);
+      padding: 10px 15px;
+      border-radius: 10px;
+      border: 1px solid rgba(241, 196, 15, 0.3);
+    }
+
+    .progress-bar-container {
+      width: 80%;
+      height: 14px;
+      background: rgba(0,0,0,0.5);
+      border-radius: 10px;
+      border: 2px solid var(--board-border);
+      overflow: hidden;
+    }
+
+    .progress-bar {
+      width: 0%;
+      height: 100%;
+      background: linear-gradient(90deg, #f39c12, #f1c40f);
+      transition: width 0.3s ease;
+    }
+
+    .header-bar {
+      width: 100%;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: rgba(0,0,0,0.4);
+      padding: 10px 15px;
+      border-radius: 10px;
+      font-size: 13px;
+    }
+
+    .user-info { color: var(--accent-yellow); font-weight: bold; }
+    .high-score-badge { color: var(--success-green); font-weight: bold; }
+
+    .grade-container {
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .btn {
+      width: 100%;
+      padding: 14px;
+      border-radius: 12px;
+      border: 2px solid rgba(255,255,255,0.2);
+      background: rgba(0,0,0,0.5);
+      color: #fff;
+      font-size: 16px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all 0.2s;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .btn:hover { background: rgba(255,255,255,0.15); transform: translateY(-2px); }
+    .btn-primary { background: linear-gradient(45deg, #27ae60, #2ecc71); border: none; }
+    .btn-league { background: linear-gradient(45deg, #d35400, #e67e22); border: none; }
+
+    .input-box {
+      width: 100%;
+      padding: 14px;
+      border-radius: 12px;
+      border: 2px solid var(--board-border);
+      background: rgba(0,0,0,0.6);
+      color: #fff;
+      font-size: 18px;
+      text-align: center;
+      outline: none;
+    }
+
+    .tutorial-box {
+      background: rgba(0,0,0,0.5);
+      padding: 15px;
+      border-radius: 12px;
+      text-align: right;
+      font-size: 14px;
+      line-height: 1.8;
+      border-right: 4px solid var(--accent-yellow);
+    }
+
+    .game-header {
+      width: 100%;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .timer-circle {
+      width: 50px;
+      height: 50px;
+      border-radius: 50%;
+      background: rgba(0,0,0,0.6);
+      border: 3px solid var(--accent-yellow);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      font-size: 18px;
+      font-weight: 900;
+      color: var(--accent-yellow);
+    }
+
+    .question-card {
+      width: 100%;
+      min-height: 120px;
+      background: rgba(0,0,0,0.6);
+      border: 2px dashed rgba(255,255,255,0.3);
+      border-radius: 15px;
+      padding: 15px;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      font-size: 16px;
+      font-weight: 700;
+      line-height: 1.6;
+    }
+
+    .options-grid {
+      width: 100%;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    .opt-btn {
+      padding: 14px 10px;
+      background: rgba(0,0,0,0.5);
+      border: 2px solid rgba(255,255,255,0.1);
+      border-radius: 10px;
+      color: #fff;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.3s ease;
+    }
+
+    .opt-btn.correct { background: var(--success-green) !important; color: #fff; }
+    .opt-btn.wrong { background: var(--danger-red) !important; color: #fff; }
+
+    .leaderboard-list {
+      width: 100%;
+      flex-grow: 1;
+      overflow-y: auto;
+      background: rgba(0,0,0,0.4);
+      border-radius: 10px;
+      padding: 10px;
+      margin: 10px 0;
+      text-align: right;
+    }
+
+    .lb-item {
+      display: flex;
+      justify-content: space-between;
+      padding: 10px;
+      border-bottom: 1px solid rgba(255,255,255,0.1);
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="bg-classroom"></div>
+  <div class="particles"></div>
+
+  <div class="app-container">
+
+    <!-- 1. لودینگ -->
+    <div id="loading-screen" class="screen active">
+      <div class="chalk-title"><i class="fa-solid fa-graduation-cap"></i> کوئیز درسی هوشمند</div>
+      <div class="loading-sub">ساخته شده توسط عطا اسکندری دانش آموز مدرسه شهدای خلبان ۲</div>
+      <div class="progress-bar-container">
+        <div class="progress-bar" id="progress-bar"></div>
+      </div>
+      <div id="loading-status" style="font-size: 13px; color: #aaa;">در حال آماده‌سازی بازی...</div>
+    </div>
+
+    <!-- 2. ثبت نام / ورود -->
+    <div id="register-screen" class="screen">
+      <div class="chalk-title" id="auth-title">ثبت نام بازیکن</div>
+      <div style="width:100%; display:flex; flex-direction:column; gap:12px;">
+        <p id="auth-hint" style="font-size: 13px; line-height: 1.7;">یک نام مستعار و رمز عبور انتخاب کنید. نام شما یکتاست و بعد از ثبت قابل تغییر نیست. رمز را فراموش نکنید!</p>
+        <input type="text" id="username-input" class="input-box" placeholder="نام یا نام مستعار شما..." maxlength="20" autocomplete="username">
+        <input type="password" id="password-input" class="input-box" placeholder="رمز عبور (حداقل ۶ حرف)" maxlength="100" autocomplete="current-password">
+        <div id="reg-error" style="color: var(--danger-red); font-size: 13px; display: none;"></div>
+      </div>
+      <div style="width:100%; display:flex; flex-direction:column; gap:10px;">
+        <button class="btn btn-primary" id="auth-submit" onclick="submitAuth()">ثبت نام و ورود <i class="fa-solid fa-arrow-left"></i></button>
+        <button class="btn" id="auth-toggle" onclick="toggleAuthMode()">قبلاً ثبت نام کرده‌ام؛ ورود به حساب</button>
+      </div>
+    </div>
+
+    <!-- 3. منوی اصلی -->
+    <div id="menu-screen" class="screen">
+      <div class="header-bar">
+        <span class="user-info" id="display-username">کاربر</span>
+        <span class="high-score-badge" id="display-highscore">رکورد شما: ۰</span>
+      </div>
+      <div class="chalk-title" style="font-size: 18px;">انتخاب پایه تحصیلی</div>
+      <div class="grade-container">
+        <button class="btn" onclick="startTutorial(7)"><i class="fa-solid fa-book-open"></i> پایه هفتم راهنمایی</button>
+        <button class="btn" onclick="startTutorial(8)"><i class="fa-solid fa-book-open"></i> پایه هشتم راهنمایی</button>
+        <button class="btn" onclick="startTutorial(9)"><i class="fa-solid fa-book-open"></i> پایه نهم راهنمایی</button>
+        <button class="btn btn-league" onclick="openLeague()"><i class="fa-solid fa-trophy"></i> جدول امتیازات (لیگ)</button>
+      </div>
+      <div style="font-size: 12px; color: #ddd;">سازنده: عطا اسکندری</div>
+    </div>
+
+    <!-- 4. راهنما و آموزش -->
+    <div id="tutorial-screen" class="screen">
+      <div class="chalk-title">قوانین بازی</div>
+      <div class="tutorial-box">
+        <p><i class="fa-solid fa-circle-check" style="color:var(--success-green);"></i> هر پاسخ صحیح: <b>۱۰ امتیاز</b></p>
+        <p><i class="fa-solid fa-circle-xmark" style="color:var(--danger-red);"></i> پاسخ اشتباه یا تمام شدن وقت (۱۰ ثانیه): <b>پایان همان دور (رکورد شما حفظ می‌شود)</b></p>
+        <p><i class="fa-solid fa-lightbulb" style="color:var(--accent-yellow);"></i> در صورت پاسخ اشتباه، گزینه درست با <b>رنگ سبز</b> مشخص می‌شود.</p>
+      </div>
+      <button class="btn btn-primary" onclick="beginGame()">شروع مسابقه <i class="fa-solid fa-play"></i></button>
+      <button class="btn" onclick="backToMenu()">بازگشت</button>
+    </div>
+
+    <!-- 5. صفحه اصلی بازی -->
+    <div id="game-screen" class="screen">
+      <div class="game-header">
+        <div style="text-align: right;">
+          <div style="font-size: 12px; color: #aaa;">امتیاز فعلی</div>
+          <div id="current-score" style="font-size: 18px; font-weight: bold; color: var(--accent-yellow);">۰</div>
+        </div>
+        <div class="timer-circle" id="timer-text">۱۰</div>
+        <div style="text-align: left;">
+          <div style="font-size: 12px; color: #aaa;">رکورد شما</div>
+          <div id="in-game-highscore" style="font-size: 18px; font-weight: bold; color: var(--success-green);">۰</div>
+        </div>
+      </div>
+
+      <div class="question-card" id="question-text">در حال بارگذاری سوال...</div>
+      <div class="options-grid" id="options-container"></div>
+    </div>
+
+    <!-- 6. جدول امتیازات جهانی -->
+    <div id="league-screen" class="screen">
+      <div class="chalk-title"><i class="fa-solid fa-trophy"></i> رکوردها و امتیازات</div>
+      <div class="leaderboard-list" id="leaderboard-data">
+        <div style="text-align:center; padding: 20px;">در حال بارگذاری...</div>
+      </div>
+      <button class="btn" onclick="backToMenu()">بازگشت به منو</button>
+    </div>
+
+  </div>
+
+  <script>
+    // سیستم صوتی (Web Audio API)
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    
+    function playSound(type) {
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+
+      if (type === 'click') {
+        osc.frequency.setValueAtTime(400, audioCtx.currentTime);
+        gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.05);
+      } else if (type === 'correct') {
+        osc.frequency.setValueAtTime(523.25, audioCtx.currentTime);
+        osc.frequency.setValueAtTime(659.25, audioCtx.currentTime + 0.1);
+        gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.25);
+      } else if (type === 'wrong') {
+        osc.frequency.setValueAtTime(200, audioCtx.currentTime);
+        osc.frequency.setValueAtTime(150, audioCtx.currentTime + 0.1);
+        gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.3);
+      } else if (type === 'tick') {
+        osc.frequency.setValueAtTime(800, audioCtx.currentTime);
+        gain.gain.setValueAtTime(0.05, audioCtx.currentTime);
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.03);
+      }
+    }
+
+    function checkInternet() {
+      if (!navigator.onLine) {
+        alert("لطفاً به اینترنت متصل بشید");
+        return false;
+      }
+      return true;
+    }
+
+    let progress = 0;
+    const bar = document.getElementById('progress-bar');
+    const loadInterval = setInterval(() => {
+      progress += 10;
+      bar.style.width = progress + '%';
+      if (progress >= 100) {
+        clearInterval(loadInterval);
+        checkSavedUser();
+      }
+    }, 60);
+
+    // ---------- تنظیم آدرس سرور ----------
+    // وقتی بازی و سرور روی یک دامنه‌اند همین خالی بماند.
+    // برای APK یا میزبانی جدا، آدرس کامل سرور را بنویس. مثال: 'https://my-quiz.onrender.com'
+    const API_BASE = '';
+
+    let token = localStorage.getItem('ata_quiz_token');
+    let currentUser = localStorage.getItem('ata_quiz_user');
+    let currentHighScore = parseInt(localStorage.getItem('ata_quiz_highscore') || '0');
+    let selectedGrade = 7;
+    let score = 0;
+    let timer = 10;
+    let timerInterval = null;
+    let currentQuestion = null;   // فقط متن و گزینه‌ها؛ جواب درست روی سرور می‌ماند
+    let busy = false;
+    let authMode = 'register';
+
+    async function api(path, method = 'GET', body) {
+      const res = await fetch(API_BASE + path, {
+        method,
+        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}) },
+        body: body ? JSON.stringify(body) : undefined
+      });
+      let data = {};
+      try { data = await res.json(); } catch (e) {}
+      if (res.status === 401 && token) { clearSession(); }
+      if (!res.ok) { const err = new Error(data.error || 'خطا در ارتباط با سرور'); err.status = res.status; throw err; }
+      return data;
+    }
+
+    function clearSession() {
+      token = null; currentUser = null; currentHighScore = 0;
+      localStorage.removeItem('ata_quiz_token');
+      localStorage.removeItem('ata_quiz_user');
+      localStorage.removeItem('ata_quiz_highscore');
+    }
+
+    function saveSession(data) {
+      token = data.token; currentUser = data.name; currentHighScore = data.bestScore || 0;
+      localStorage.setItem('ata_quiz_token', token);
+      localStorage.setItem('ata_quiz_user', currentUser);
+      localStorage.setItem('ata_quiz_highscore', currentHighScore);
+    }
+
+    function refreshScoreLabels() {
+      document.getElementById('display-username').innerText = currentUser || 'کاربر';
+      document.getElementById('display-highscore').innerText = 'رکورد شما: ' + currentHighScore;
+      document.getElementById('in-game-highscore').innerText = currentHighScore;
+    }
+
+    async function checkSavedUser() {
+      if (token) {
+        try {
+          const me = await api('/api/me');
+          currentUser = me.name; currentHighScore = me.bestScore;
+          localStorage.setItem('ata_quiz_user', currentUser);
+          localStorage.setItem('ata_quiz_highscore', currentHighScore);
+          refreshScoreLabels();
+          showScreen('menu-screen');
+          return;
+        } catch (e) {
+          if (e.status !== 401 && currentUser) {   // مشکل شبکه: با داده‌ی ذخیره‌شده وارد منو شو
+            refreshScoreLabels();
+            showScreen('menu-screen');
+            return;
+          }
+        }
+      }
+      showScreen('register-screen');
+    }
+
+    function showScreen(screenId) {
+      playSound('click');
+      document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+      document.getElementById(screenId).classList.add('active');
+    }
+
+    function toggleAuthMode() {
+      authMode = authMode === 'register' ? 'login' : 'register';
+      const isReg = authMode === 'register';
+      document.getElementById('auth-title').innerText = isReg ? 'ثبت نام بازیکن' : 'ورود به حساب';
+      document.getElementById('auth-hint').innerText = isReg
+        ? 'یک نام مستعار و رمز عبور انتخاب کنید. نام شما یکتاست و بعد از ثبت قابل تغییر نیست. رمز را فراموش نکنید!'
+        : 'نام و رمزی که موقع ثبت نام انتخاب کردی را وارد کن.';
+      document.getElementById('auth-submit').innerHTML = (isReg ? 'ثبت نام و ورود' : 'ورود') + ' <i class="fa-solid fa-arrow-left"></i>';
+      document.getElementById('auth-toggle').innerText = isReg ? 'قبلاً ثبت نام کرده‌ام؛ ورود به حساب' : 'حساب ندارم؛ ثبت نام می‌کنم';
+      document.getElementById('password-input').autocomplete = isReg ? 'new-password' : 'current-password';
+      document.getElementById('reg-error').style.display = 'none';
+    }
+
+    async function submitAuth() {
+      if (!checkInternet() || busy) return;
+      const name = document.getElementById('username-input').value.trim();
+      const password = document.getElementById('password-input').value;
+      const err = document.getElementById('reg-error');
+      err.style.display = 'none';
+
+      if (!name) { err.innerText = 'لطفاً یک اسم وارد کنید!'; err.style.display = 'block'; return; }
+      if (!password) { err.innerText = 'لطفاً رمز عبور را وارد کنید!'; err.style.display = 'block'; return; }
+
+      busy = true;
+      try {
+        const data = await api(authMode === 'register' ? '/api/register' : '/api/login', 'POST', { name, password });
+        saveSession(data);
+        document.getElementById('password-input').value = '';
+        refreshScoreLabels();
+        showScreen('menu-screen');
+      } catch (e) {
+        err.innerText = e.message;
+        err.style.display = 'block';
+      } finally { busy = false; }
+    }
+
+    function startTutorial(grade) {
+      selectedGrade = grade;
+      showScreen('tutorial-screen');
+    }
+
+    function backToMenu() {
+      clearInterval(timerInterval);
+      showScreen('menu-screen');
+    }
+
+    async function beginGame() {
+      if (!checkInternet() || busy) return;
+      busy = true;
+      try {
+        const r = await api('/api/game/start', 'POST', { grade: selectedGrade });
+        score = 0;
+        document.getElementById('current-score').innerText = score;
+        showScreen('game-screen');
+        showQuestion(r.question, r.seconds);
+      } catch (e) {
+        alert(e.message);
+      } finally { busy = false; }
+    }
+
+    function showQuestion(q, seconds) {
+      clearInterval(timerInterval);
+      currentQuestion = q;
+      document.getElementById('question-text').innerText = `[درس: ${q.subject}]\n${q.text}`;
+      const optsContainer = document.getElementById('options-container');
+      optsContainer.innerHTML = '';
+      q.opts.forEach(opt => {
+        const btn = document.createElement('button');
+        btn.className = 'opt-btn';
+        btn.innerText = opt;
+        btn.onclick = () => checkAnswer(opt, btn);
+        optsContainer.appendChild(btn);
+      });
+      startTimer(seconds || 10);
+    }
+
+    function startTimer(seconds) {
+      timer = seconds;
+      document.getElementById('timer-text').innerText = timer;
+      timerInterval = setInterval(async () => {
+        timer--;
+        document.getElementById('timer-text').innerText = Math.max(timer, 0);
+        playSound('tick');
+        if (timer <= 0) {
+          clearInterval(timerInterval);
+          lockOptions();
+          playSound('wrong');
+          try {
+            const r = await api('/api/game/timeout', 'POST');
+            highlightCorrectAnswer(r.correctAnswer);
+            updateBest(r.bestScore);
+            setTimeout(() => gameOver("زمان تمام شد!", r.score), 1500);
+          } catch (e) {
+            setTimeout(() => gameOver("زمان تمام شد!", score), 1500);
+          }
+        }
+      }, 1000);
+    }
+
+    function lockOptions() {
+      document.querySelectorAll('.opt-btn').forEach(b => b.disabled = true);
+    }
+
+    function highlightCorrectAnswer(correctAnswer) {
+      document.querySelectorAll('.opt-btn').forEach(btn => {
+        if (btn.innerText === correctAnswer) btn.classList.add('correct');
+      });
+    }
+
+    function updateBest(best) {
+      if (typeof best === 'number' && best > currentHighScore) {
+        currentHighScore = best;
+        localStorage.setItem('ata_quiz_highscore', currentHighScore);
+      }
+      refreshScoreLabels();
+    }
+
+    async function checkAnswer(selectedOpt, btnElement) {
+      if (busy) return;
+      busy = true;
+      clearInterval(timerInterval);
+      lockOptions();
+      try {
+        const r = await api('/api/game/answer', 'POST', { answer: selectedOpt });
+        updateBest(r.bestScore);
+        if (r.correct) {
+          playSound('correct');
+          btnElement.classList.add('correct');
+          score = r.score;
+          document.getElementById('current-score').innerText = score;
+          setTimeout(() => showQuestion(r.question, r.seconds), 800);
+        } else {
+          playSound('wrong');
+          btnElement.classList.add('wrong');
+          highlightCorrectAnswer(r.correctAnswer);
+          setTimeout(() => gameOver(r.timeout ? "زمان تمام شد!" : "پاسخ اشتباه بود!", r.score), 1500);
+        }
+      } catch (e) {
+        alert(e.message);
+        backToMenu();
+      } finally { busy = false; }
+    }
+
+    function gameOver(msg, finalScore) {
+      alert(msg + "\nامتیاز این دور: " + finalScore);
+      backToMenu();
+    }
+
+    async function openLeague() {
+      if (!checkInternet()) return;
+      showScreen('league-screen');
+      const lbContainer = document.getElementById('leaderboard-data');
+      lbContainer.innerHTML = '<div style="text-align:center; padding: 20px;">در حال بارگذاری...</div>';
+
+      let data;
+      try {
+        data = await api('/api/league');
+      } catch (e) {
+        lbContainer.innerHTML = '';
+        const d = document.createElement('div');
+        d.style.cssText = 'text-align:center; padding:20px;';
+        d.innerText = 'اتصال به سرور برقرار نشد. دوباره تلاش کنید.';
+        lbContainer.appendChild(d);
+        return;
+      }
+
+      lbContainer.innerHTML = '';
+      if (!data.top.length) {
+        const d = document.createElement('div');
+        d.style.cssText = 'text-align:center; padding:20px;';
+        d.innerText = 'هنوز رکوردی ثبت نشده است!';
+        lbContainer.appendChild(d);
+        return;
+      }
+
+      const medals = ['🥇', '🥈', '🥉'];
+      data.top.forEach(item => {
+        const div = document.createElement('div');
+        div.className = 'lb-item';
+        const left = document.createElement('span');
+        // نام کاربران با textContent گذاشته می‌شود تا کسی نتواند کد مخرب در نام بنویسد
+        left.textContent = `${medals[item.rank - 1] || '#' + item.rank} ${item.name}${item.name === currentUser ? ' (شما)' : ''}`;
+        const right = document.createElement('span');
+        const b = document.createElement('b');
+        b.textContent = `${item.score} امتیاز`;
+        right.appendChild(b);
+        div.appendChild(left); div.appendChild(right);
+        if (item.name === currentUser) div.style.background = 'rgba(241,196,15,0.15)';
+        lbContainer.appendChild(div);
+      });
+
+      if (data.me && data.me.rank && data.me.rank > data.top.length) {
+        const div = document.createElement('div');
+        div.className = 'lb-item';
+        div.style.background = 'rgba(241,196,15,0.15)';
+        div.textContent = `رتبه شما: #${data.me.rank} — ${data.me.score} امتیاز`;
+        lbContainer.appendChild(div);
+      }
+    }
+  </script>
+</body>
+</html>

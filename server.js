@@ -267,8 +267,10 @@ const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.
 function serveStatic(req, res) {
   let p = decodeURIComponent(new URL(req.url, 'http://x').pathname);
   if (p === '/') p = '/index.html';
-  const file = path.normalize(path.join(PUBLIC_DIR, p));
+  let file = path.normalize(path.join(PUBLIC_DIR, p));
   if (!file.startsWith(PUBLIC_DIR)) { res.writeHead(403); return res.end(); }
+  // اگر پوشه public ساخته نشده بود، index.html کنار server.js هم قبول است (فقط همین یک فایل)
+  if (p === '/index.html' && !fs.existsSync(file)) file = path.join(__dirname, 'index.html');
   fs.readFile(file, (err, data) => {
     if (err) { res.writeHead(404); return res.end('Not found'); }
     res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream' });
