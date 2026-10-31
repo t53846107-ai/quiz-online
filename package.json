@@ -1,0 +1,8 @@
+{
+  "name": "ata-quiz-online",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "engines": { "node": ">=22.5" },
+  "scripts": { "start": "node --no-warnings server.js" }
+}
