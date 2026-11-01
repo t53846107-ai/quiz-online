@@ -9,26 +9,123 @@ const PORT = process.env.PORT || 3000;
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'data.db');
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
-// ---------- دیتابیس ----------
-const db = new DatabaseSync(DB_PATH);
-db.exec(`
-  PRAGMA journal_mode = WAL;
-  CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    name_key TEXT NOT NULL UNIQUE,      -- نام نرمال‌شده برای جلوگیری از تکراری (حروف بزرگ/کوچک، ی/ي، ک/ك)
-    salt TEXT NOT NULL,
-    hash TEXT NOT NULL,
-    best_score INTEGER NOT NULL DEFAULT 0,
-    created_at INTEGER NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS sessions (
-    token_hash TEXT PRIMARY KEY,
-    user_id INTEGER NOT NULL,
-    created_at INTEGER NOT NULL
-  );
-  CREATE INDEX IF NOT EXISTS idx_users_score ON users(best_score DESC);
-`);
+// ---------- ذخیره‌سازی: اگر کلیدهای Upstash داده شده باشد از Redis، وگرنه SQLite ----------
+const REDIS_URL = process.env.UPSTASH_REDIS_REST_URL;
+const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
+const SESSION_TTL = 60 * 60 * 24 * 90; // ۹۰ روز
+
+function scoreFor(best, created) { return best + (1 - created / 1e14); } // امتیاز مساوی: قدیمی‌تر بالاتر
+function memberFor(key, name) { return key + '|' + name; }
+
+function redisStore() {
+  async function cmd(...args) {
+    const r = await fetch(REDIS_URL, { method: 'POST', headers: { Authorization: 'Bearer ' + REDIS_TOKEN }, body: JSON.stringify(args) });
+    const j = await r.json();
+    if (j.error) throw new Error('redis: ' + j.error);
+    return j.result;
+  }
+  async function pipe(cmds) {
+    const r = await fetch(REDIS_URL + '/pipeline', { method: 'POST', headers: { Authorization: 'Bearer ' + REDIS_TOKEN }, body: JSON.stringify(cmds) });
+    const j = await r.json();
+    return j.map((x) => { if (x.error) throw new Error('redis: ' + x.error); return x.result; });
+  }
+  return {
+    kind: 'redis',
+    async createUser(key, name, salt, hash) {
+      const created = Date.now();
+      const ok = await cmd('SET', 'user:' + key, JSON.stringify({ name, salt, hash, created }), 'NX');
+      return ok === 'OK';
+    },
+    async getUser(key) {
+      const [raw, best] = await pipe([['GET', 'user:' + key], ['HGET', 'bests', key]]);
+      if (!raw) return null;
+      const u = JSON.parse(raw);
+      return { key, name: u.name, salt: u.salt, hash: u.hash, created: u.created, best: Number(best || 0) };
+    },
+    async createSession(tokenHash, userKey) { await cmd('SET', 'sess:' + tokenHash, userKey, 'EX', SESSION_TTL); },
+    async getSession(tokenHash) { return await cmd('GET', 'sess:' + tokenHash); },
+    async deleteSession(tokenHash) { await cmd('DEL', 'sess:' + tokenHash); },
+    async setBest(user, best) {
+      await pipe([['HSET', 'bests', user.key, String(best)], ['ZADD', 'lb', String(scoreFor(best, user.created)), memberFor(user.key, user.name)]]);
+    },
+    async leaderboard(limit) {
+      const flat = (await cmd('ZREVRANGE', 'lb', '0', String(limit - 1), 'WITHSCORES')) || [];
+      const out = [];
+      for (let i = 0; i < flat.length; i += 2) {
+        const m = flat[i]; out.push({ name: m.slice(m.indexOf('|') + 1), score: Math.floor(Number(flat[i + 1])) });
+      }
+      return out;
+    },
+    async rankOf(user) {
+      const r = await cmd('ZREVRANK', 'lb', memberFor(user.key, user.name));
+      return r === null || r === undefined ? null : r + 1;
+    }
+  };
+}
+
+function sqliteStore() {
+  const db = new DatabaseSync(DB_PATH);
+  db.exec(`
+    PRAGMA journal_mode = WAL;
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      name_key TEXT NOT NULL UNIQUE,
+      salt TEXT NOT NULL,
+      hash TEXT NOT NULL,
+      best_score INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS sessions (
+      token_hash TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_users_score ON users(best_score DESC);
+  `);
+  const toUser = (r) => r && { key: r.name_key, name: r.name, salt: r.salt, hash: r.hash, created: r.created_at, best: r.best_score };
+  return {
+    kind: 'sqlite',
+    async createUser(key, name, salt, hash) {
+      try { db.prepare('INSERT INTO users (name, name_key, salt, hash, created_at) VALUES (?, ?, ?, ?, ?)').run(name, key, salt, hash, Date.now()); return true; }
+      catch (e) { if (String(e.message).includes('UNIQUE')) return false; throw e; }
+    },
+    async getUser(key) { return toUser(db.prepare('SELECT * FROM users WHERE name_key = ?').get(key)); },
+    async createSession(tokenHash, userKey) {
+      const u = db.prepare('SELECT id FROM users WHERE name_key = ?').get(userKey);
+      db.prepare('INSERT INTO sessions (token_hash, user_id, created_at) VALUES (?, ?, ?)').run(tokenHash, u.id, Date.now());
+    },
+    async getSession(tokenHash) {
+      const r = db.prepare('SELECT u.name_key AS k FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?').get(tokenHash);
+      return r ? r.k : null;
+    },
+    async deleteSession(tokenHash) { db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(tokenHash); },
+    async setBest(user, best) { db.prepare('UPDATE users SET best_score = ? WHERE name_key = ?').run(best, user.key); },
+    async leaderboard(limit) {
+      return db.prepare('SELECT name, best_score FROM users WHERE best_score > 0 ORDER BY best_score DESC, created_at ASC LIMIT ?').all(limit)
+        .map((r) => ({ name: r.name, score: r.best_score }));
+    },
+    async rankOf(user) {
+      if (!user.best) return null;
+      return 1 + db.prepare('SELECT COUNT(*) AS c FROM users WHERE best_score > ?').get(user.best).c;
+    }
+  };
+}
+
+const store = REDIS_URL && REDIS_TOKEN ? redisStore() : sqliteStore();
+console.log('Storage:', store.kind);
+
+// کش کوتاه‌مدت در حافظه تا تعداد درخواست به دیتابیس کم شود
+const userCache = new Map();      // key -> { user, at }
+const sessionCache = new Map();   // tokenHash -> userKey
+async function getUserCached(key) {
+  const c = userCache.get(key);
+  if (c && Date.now() - c.at < 10 * 60e3) return c.user;
+  const u = await store.getUser(key);
+  if (u) userCache.set(key, { user: u, at: Date.now() });
+  return u;
+}
+let lbCache = { at: 0, data: null };
 
 // ---------- بانک سوال (فقط روی سرور؛ جواب‌ها هیچ‌وقت به کلاینت نمی‌رسن) ----------
 const questionBank = {
@@ -85,7 +182,7 @@ function rateLimited(key, max, windowMs) {
 setInterval(() => { const now = Date.now(); for (const [k, v] of hits) if (!v.some((t) => now - t < 3600e3)) hits.delete(k); }, 600e3).unref();
 
 // بازی‌های در جریان (در حافظه)
-const games = new Map(); // userId -> { grade, score, current:{q, issuedAt}, over }
+const games = new Map(); // userKey -> { grade, score, current:{q, issuedAt}, over }
 
 function getIP(req) {
   return (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress || 'x';
@@ -112,20 +209,26 @@ function readBody(req) {
   });
 }
 
-function authUser(req) {
+async function authUser(req) {
   const h = req.headers['authorization'] || '';
   const token = h.startsWith('Bearer ') ? h.slice(7) : '';
   if (!token) return null;
-  const row = db.prepare(
-    'SELECT u.id, u.name, u.best_score FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?'
-  ).get(sha256(token));
-  return row || null;
+  const th = sha256(token);
+  let key = sessionCache.get(th);
+  if (!key) {
+    key = await store.getSession(th);
+    if (!key) return null;
+    sessionCache.set(th, key);
+  }
+  return await getUserCached(key);
 }
 
-function newSession(userId) {
+async function newSession(user) {
   const token = crypto.randomBytes(32).toString('hex');
-  db.prepare('INSERT INTO sessions (token_hash, user_id, created_at) VALUES (?, ?, ?)')
-    .run(sha256(token), userId, Date.now());
+  const th = sha256(token);
+  await store.createSession(th, user.key);
+  sessionCache.set(th, user.key);
+  userCache.set(user.key, { user, at: Date.now() });
   return token;
 }
 
@@ -154,15 +257,11 @@ const routes = {
 
     const salt = crypto.randomBytes(16).toString('hex');
     const hash = await hashPassword(password, salt);
-    try {
-      const r = db.prepare('INSERT INTO users (name, name_key, salt, hash, created_at) VALUES (?, ?, ?, ?, ?)')
-        .run(name, key, salt, hash, Date.now());
-      const token = newSession(Number(r.lastInsertRowid));
-      return send(res, 200, { token, name, bestScore: 0 });
-    } catch (e) {
-      if (String(e.message).includes('UNIQUE')) return send(res, 409, { error: 'این نام قبلاً گرفته شده. یک نام دیگر انتخاب کنید.' });
-      throw e;
-    }
+    const ok = await store.createUser(key, name, salt, hash);
+    if (!ok) return send(res, 409, { error: 'این نام قبلاً گرفته شده. یک نام دیگر انتخاب کنید.' });
+    const user = await store.getUser(key);
+    const token = await newSession(user);
+    return send(res, 200, { token, name: user.name, bestScore: 0 });
   },
 
   'POST /api/login': async (req, res, body) => {
@@ -174,44 +273,49 @@ const routes = {
     const key = normalizeName(name);
     if (rateLimited('loginuser:' + key, 10, 15 * 60e3)) return send(res, 429, { error: 'تلاش‌های زیاد برای این حساب. بعداً امتحان کنید.' });
 
-    const u = db.prepare('SELECT * FROM users WHERE name_key = ?').get(key);
-    // حتی اگر کاربر وجود نداشت، هش محاسبه می‌شود تا زمان پاسخ یکسان بماند
+    const u = key ? await store.getUser(key) : null;
     const salt = u ? u.salt : '00'.repeat(16);
     const hash = await hashPassword(password, salt);
     const ok = u && crypto.timingSafeEqual(Buffer.from(hash, 'hex'), Buffer.from(u.hash, 'hex'));
     if (!ok) return send(res, 401, { error: 'نام یا رمز عبور اشتباه است.' });
-    const token = newSession(u.id);
-    return send(res, 200, { token, name: u.name, bestScore: u.best_score });
+    const shared = await getUserCached(key);
+    const token = await newSession(shared || u);
+    return send(res, 200, { token, name: u.name, bestScore: (shared || u).best });
   },
 
   'GET /api/me': async (req, res) => {
-    const u = authUser(req);
+    const u = await authUser(req);
     if (!u) return send(res, 401, { error: 'unauthorized' });
-    return send(res, 200, { name: u.name, bestScore: u.best_score });
+    return send(res, 200, { name: u.name, bestScore: u.best });
   },
 
   'POST /api/logout': async (req, res) => {
     const h = req.headers['authorization'] || '';
     const token = h.startsWith('Bearer ') ? h.slice(7) : '';
-    if (token) db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(sha256(token));
-    games.forEach((g, id) => { const u = authUser(req); if (u && u.id === id) games.delete(id); });
+    if (token) {
+      const th = sha256(token);
+      const u = await authUser(req);
+      if (u) games.delete(u.key);
+      sessionCache.delete(th);
+      await store.deleteSession(th);
+    }
     return send(res, 200, { ok: true });
   },
 
   'POST /api/game/start': async (req, res, body) => {
-    const u = authUser(req);
+    const u = await authUser(req);
     if (!u) return send(res, 401, { error: 'unauthorized' });
     const grade = Number(body.grade);
     if (!questionBank[grade]) return send(res, 400, { error: 'پایه نامعتبر است.' });
     const { q, opts } = pickQuestion(grade);
-    games.set(u.id, { grade, score: 0, current: { q, issuedAt: Date.now() } });
+    games.set(u.key, { grade, score: 0, current: { q, issuedAt: Date.now() } });
     return send(res, 200, { score: 0, question: { text: q.q, subject: q.subject, opts }, seconds: QUESTION_SECONDS });
   },
 
   'POST /api/game/answer': async (req, res, body) => {
-    const u = authUser(req);
+    const u = await authUser(req);
     if (!u) return send(res, 401, { error: 'unauthorized' });
-    const g = games.get(u.id);
+    const g = games.get(u.key);
     if (!g || !g.current) return send(res, 400, { error: 'بازی فعالی وجود ندارد.' });
 
     const { q, issuedAt } = g.current;
@@ -221,44 +325,46 @@ const routes = {
 
     if (!correct) {
       const finalScore = g.score;
-      games.delete(u.id);
-      return send(res, 200, { correct: false, timeout: late, correctAnswer: q.ans, gameOver: true, score: finalScore, bestScore: u.best_score });
+      games.delete(u.key);
+      return send(res, 200, { correct: false, timeout: late, correctAnswer: q.ans, gameOver: true, score: finalScore, bestScore: u.best });
     }
 
     g.score += POINTS;
-    let best = u.best_score;
-    if (g.score > best) {
-      best = g.score;
-      db.prepare('UPDATE users SET best_score = ? WHERE id = ?').run(best, u.id);
+    if (g.score > u.best) {
+      u.best = g.score;
+      lbCache.at = 0;
+      await store.setBest(u, u.best);
     }
     const next = pickQuestion(g.grade);
     g.current = { q: next.q, issuedAt: Date.now() };
     return send(res, 200, {
-      correct: true, correctAnswer: q.ans, gameOver: false, score: g.score, bestScore: best,
+      correct: true, correctAnswer: q.ans, gameOver: false, score: g.score, bestScore: u.best,
       question: { text: next.q.q, subject: next.q.subject, opts: next.opts }, seconds: QUESTION_SECONDS
     });
   },
 
-  // وقتی زمان تمام شد، کلاینت این را صدا می‌زند تا جواب درست را بگیرد و بازی ببندد
   'POST /api/game/timeout': async (req, res) => {
-    const u = authUser(req);
+    const u = await authUser(req);
     if (!u) return send(res, 401, { error: 'unauthorized' });
-    const g = games.get(u.id);
+    const g = games.get(u.key);
     if (!g || !g.current) return send(res, 400, { error: 'بازی فعالی وجود ندارد.' });
     if (Date.now() - g.current.issuedAt < (QUESTION_SECONDS - 1) * 1000) return send(res, 400, { error: 'هنوز زمان تمام نشده.' });
     const ans = g.current.q.ans, score = g.score;
-    games.delete(u.id);
-    return send(res, 200, { correctAnswer: ans, gameOver: true, score, bestScore: u.best_score });
+    games.delete(u.key);
+    return send(res, 200, { correctAnswer: ans, gameOver: true, score, bestScore: u.best });
   },
 
   'GET /api/league': async (req, res) => {
-    const me = authUser(req);
-    const top = db.prepare('SELECT name, best_score FROM users WHERE best_score > 0 ORDER BY best_score DESC, created_at ASC LIMIT 100').all();
-    let myRank = null;
-    if (me && me.best_score > 0) {
-      myRank = 1 + db.prepare('SELECT COUNT(*) AS c FROM users WHERE best_score > ?').get(me.best_score).c;
+    const me = await authUser(req);
+    if (!lbCache.data || Date.now() - lbCache.at > 15e3) {
+      lbCache = { at: Date.now(), data: await store.leaderboard(100) };
     }
-    return send(res, 200, { top: top.map((r, i) => ({ rank: i + 1, name: r.name, score: r.best_score })), me: me ? { name: me.name, score: me.best_score, rank: myRank } : null });
+    let myRank = null;
+    if (me && me.best > 0) myRank = await store.rankOf(me);
+    return send(res, 200, {
+      top: lbCache.data.map((r, i) => ({ rank: i + 1, name: r.name, score: r.score })),
+      me: me ? { name: me.name, score: me.best, rank: myRank } : null
+    });
   }
 };
 
