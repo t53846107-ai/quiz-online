@@ -1,0 +1,23 @@
+{
+  "name": "کوئیز آنلاین درسی",
+  "short_name": "کوئیز",
+  "description": "بازی کوئیز آنلاین ساخته شده توسط عطا اسکندری",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#1b3b2b",
+  "theme_color": "#1b3b2b",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/1974/1974094.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/1974/1974094.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    }
+  ]
+}
