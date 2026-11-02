@@ -16,7 +16,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
-    name_key TEXT NOT NULL UNIQUE,      -- نام نرمال‌شده برای جلوگیری از تکراری (حروف بزرگ/کوچک، ی/ي، ک/ك)
+    name_key TEXT NOT NULL UNIQUE,
     salt TEXT NOT NULL,
     hash TEXT NOT NULL,
     best_score INTEGER NOT NULL DEFAULT 0,
@@ -30,7 +30,7 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_users_score ON users(best_score DESC);
 `);
 
-// ---------- بانک سوال (فقط روی سرور؛ جواب‌ها هیچ‌وقت به کلاینت نمی‌رسن) ----------
+// ---------- بانک سوال ----------
 const questionBank = {
   7: [
     { q: "حاصل عبارت: -8 + 15 چند است؟", opts: ["7", "-7", "23", "-23"], ans: "7", subject: "ریاضی" },
@@ -56,25 +56,21 @@ const questionBank = {
 
 // ---------- ابزارهای کمکی ----------
 const QUESTION_SECONDS = 10;
-const GRACE_MS = 2500;            // تحمل تأخیر شبکه
+const GRACE_MS = 2500;
 const POINTS = 10;
+const ADMIN_PASSWORD = 'sihdirdashageiq2w9i432s';
 
 function normalizeName(s) {
-  return s.normalize('NFKC')
-    .replace(/ي/g, 'ی').replace(/ك/g, 'ک')
-    .replace(/[\u200c\u200d\u200e\u200f\s]+/g, '')   // نیم‌فاصله و فاصله
-    .toLowerCase();
+  return s.normalize('NFKC').replace(/ي/g, 'ی').replace(/ك/g, 'ک').replace(/[\u200c\u200d\u200e\u200f\s]+/g, '').toLowerCase();
 }
 
 function hashPassword(password, salt) {
-  return new Promise((resolve, reject) =>
-    crypto.scrypt(password, salt, 64, (e, k) => (e ? reject(e) : resolve(k.toString('hex')))));
+  return new Promise((resolve, reject) => crypto.scrypt(password, salt, 64, (e, k) => (e ? reject(e) : resolve(k.toString('hex')))));
 }
 
 const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
-
-// محدودیت تعداد درخواست (ساده، در حافظه)
 const hits = new Map();
+
 function rateLimited(key, max, windowMs) {
   const now = Date.now();
   const arr = (hits.get(key) || []).filter((t) => now - t < windowMs);
@@ -84,23 +80,13 @@ function rateLimited(key, max, windowMs) {
 }
 setInterval(() => { const now = Date.now(); for (const [k, v] of hits) if (!v.some((t) => now - t < 3600e3)) hits.delete(k); }, 600e3).unref();
 
-// بازی‌های در جریان (در حافظه)
-const games = new Map(); // userId -> { grade, score, current:{q, issuedAt}, over }
+const games = new Map();
 
-function getIP(req) {
-  return (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress || 'x';
-}
+function getIP(req) { return (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress || 'x'; }
 
 function send(res, status, obj) {
-  const body = JSON.stringify(obj);
-  res.writeHead(status, {
-    'Content-Type': 'application/json; charset=utf-8',
-    'Cache-Control': 'no-store',
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS'
-  });
-  res.end(body);
+  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Content-Type, Authorization', 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS' });
+  res.end(JSON.stringify(obj));
 }
 
 function readBody(req) {
@@ -116,16 +102,12 @@ function authUser(req) {
   const h = req.headers['authorization'] || '';
   const token = h.startsWith('Bearer ') ? h.slice(7) : '';
   if (!token) return null;
-  const row = db.prepare(
-    'SELECT u.id, u.name, u.best_score FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?'
-  ).get(sha256(token));
-  return row || null;
+  return db.prepare('SELECT u.id, u.name, u.best_score FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?').get(sha256(token)) || null;
 }
 
 function newSession(userId) {
   const token = crypto.randomBytes(32).toString('hex');
-  db.prepare('INSERT INTO sessions (token_hash, user_id, created_at) VALUES (?, ?, ?)')
-    .run(sha256(token), userId, Date.now());
+  db.prepare('INSERT INTO sessions (token_hash, user_id, created_at) VALUES (?, ?, ?)').run(sha256(token), userId, Date.now());
   return token;
 }
 
@@ -141,41 +123,40 @@ function pickQuestion(grade) {
 const routes = {
   'POST /api/register': async (req, res, body) => {
     const ip = getIP(req);
-    if (rateLimited('reg:' + ip, 10, 3600e3)) return send(res, 429, { error: 'تعداد تلاش زیاد است. کمی بعد دوباره امتحان کنید.' });
-
+    if (rateLimited('reg:' + ip, 10, 3600e3)) return send(res, 429, { error: 'تعداد تلاش زیاد است.' });
     const name = String(body.name || '').trim().replace(/\s+/g, ' ');
     const password = String(body.password || '');
     if (name.length < 2 || name.length > 20) return send(res, 400, { error: 'نام باید بین ۲ تا ۲۰ حرف باشد.' });
-    if (!/^[\p{L}\p{N} _.\-\u200c]+$/u.test(name)) return send(res, 400, { error: 'نام فقط می‌تواند شامل حرف، عدد، فاصله و - _ . باشد.' });
     if (password.length < 6 || password.length > 100) return send(res, 400, { error: 'رمز عبور باید حداقل ۶ حرف باشد.' });
-
     const key = normalizeName(name);
     if (!key) return send(res, 400, { error: 'نام نامعتبر است.' });
-
     const salt = crypto.randomBytes(16).toString('hex');
     const hash = await hashPassword(password, salt);
     try {
-      const r = db.prepare('INSERT INTO users (name, name_key, salt, hash, created_at) VALUES (?, ?, ?, ?, ?)')
-        .run(name, key, salt, hash, Date.now());
+      const r = db.prepare('INSERT INTO users (name, name_key, salt, hash, created_at) VALUES (?, ?, ?, ?, ?)').run(name, key, salt, hash, Date.now());
       const token = newSession(Number(r.lastInsertRowid));
       return send(res, 200, { token, name, bestScore: 0 });
     } catch (e) {
-      if (String(e.message).includes('UNIQUE')) return send(res, 409, { error: 'این نام قبلاً گرفته شده. یک نام دیگر انتخاب کنید.' });
+      if (String(e.message).includes('UNIQUE')) return send(res, 409, { error: 'این نام قبلاً گرفته شده.' });
       throw e;
     }
   },
 
   'POST /api/login': async (req, res, body) => {
     const ip = getIP(req);
-    if (rateLimited('login:' + ip, 20, 15 * 60e3)) return send(res, 429, { error: 'تلاش‌های زیاد. ۱۵ دقیقه دیگر دوباره امتحان کنید.' });
-
+    if (rateLimited('login:' + ip, 20, 15 * 60e3)) return send(res, 429, { error: 'تلاش‌های زیاد.' });
     const name = String(body.name || '').trim();
     const password = String(body.password || '');
     const key = normalizeName(name);
-    if (rateLimited('loginuser:' + key, 10, 15 * 60e3)) return send(res, 429, { error: 'تلاش‌های زیاد برای این حساب. بعداً امتحان کنید.' });
+    
+    // --- بررسی ورود ادمین ---
+    if (name.toLowerCase() === 'admin' && password === ADMIN_PASSWORD) {
+      const adminToken = 'ADMIN_' + crypto.randomBytes(16).toString('hex');
+      db.prepare('INSERT INTO sessions (token_hash, user_id, created_at) VALUES (?, ?, ?)').run(sha256(adminToken), 0, Date.now());
+      return send(res, 200, { token: adminToken, name: 'Admin', bestScore: 0, isAdmin: true });
+    }
 
     const u = db.prepare('SELECT * FROM users WHERE name_key = ?').get(key);
-    // حتی اگر کاربر وجود نداشت، هش محاسبه می‌شود تا زمان پاسخ یکسان بماند
     const salt = u ? u.salt : '00'.repeat(16);
     const hash = await hashPassword(password, salt);
     const ok = u && crypto.timingSafeEqual(Buffer.from(hash, 'hex'), Buffer.from(u.hash, 'hex'));
@@ -185,6 +166,8 @@ const routes = {
   },
 
   'GET /api/me': async (req, res) => {
+    const h = req.headers['authorization'] || '';
+    if (h.startsWith('Bearer ADMIN_')) return send(res, 200, { name: 'Admin', bestScore: 0, isAdmin: true });
     const u = authUser(req);
     if (!u) return send(res, 401, { error: 'unauthorized' });
     return send(res, 200, { name: u.name, bestScore: u.best_score });
@@ -194,7 +177,6 @@ const routes = {
     const h = req.headers['authorization'] || '';
     const token = h.startsWith('Bearer ') ? h.slice(7) : '';
     if (token) db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(sha256(token));
-    games.forEach((g, id) => { const u = authUser(req); if (u && u.id === id) games.delete(id); });
     return send(res, 200, { ok: true });
   },
 
@@ -213,18 +195,15 @@ const routes = {
     if (!u) return send(res, 401, { error: 'unauthorized' });
     const g = games.get(u.id);
     if (!g || !g.current) return send(res, 400, { error: 'بازی فعالی وجود ندارد.' });
-
     const { q, issuedAt } = g.current;
-    g.current = null; // هر سوال فقط یک بار قابل پاسخ است
+    g.current = null;
     const late = Date.now() - issuedAt > QUESTION_SECONDS * 1000 + GRACE_MS;
     const correct = !late && body.answer === q.ans;
-
     if (!correct) {
       const finalScore = g.score;
       games.delete(u.id);
       return send(res, 200, { correct: false, timeout: late, correctAnswer: q.ans, gameOver: true, score: finalScore, bestScore: u.best_score });
     }
-
     g.score += POINTS;
     let best = u.best_score;
     if (g.score > best) {
@@ -233,13 +212,9 @@ const routes = {
     }
     const next = pickQuestion(g.grade);
     g.current = { q: next.q, issuedAt: Date.now() };
-    return send(res, 200, {
-      correct: true, correctAnswer: q.ans, gameOver: false, score: g.score, bestScore: best,
-      question: { text: next.q.q, subject: next.q.subject, opts: next.opts }, seconds: QUESTION_SECONDS
-    });
+    return send(res, 200, { correct: true, correctAnswer: q.ans, gameOver: false, score: g.score, bestScore: best, question: { text: next.q.q, subject: next.q.subject, opts: next.opts }, seconds: QUESTION_SECONDS });
   },
 
-  // وقتی زمان تمام شد، کلاینت این را صدا می‌زند تا جواب درست را بگیرد و بازی ببندد
   'POST /api/game/timeout': async (req, res) => {
     const u = authUser(req);
     if (!u) return send(res, 401, { error: 'unauthorized' });
@@ -259,6 +234,30 @@ const routes = {
       myRank = 1 + db.prepare('SELECT COUNT(*) AS c FROM users WHERE best_score > ?').get(me.best_score).c;
     }
     return send(res, 200, { top: top.map((r, i) => ({ rank: i + 1, name: r.name, score: r.best_score })), me: me ? { name: me.name, score: me.best_score, rank: myRank } : null });
+  },
+
+  // --- مسیرهای مخصوص ادمین ---
+  'GET /api/admin/users': async (req, res) => {
+    const h = req.headers['authorization'] || '';
+    if (!h.startsWith('Bearer ADMIN_')) return send(res, 403, { error: 'دسترسی غیرمجاز' });
+    const users = db.prepare('SELECT id, name, best_score FROM users ORDER BY best_score DESC').all();
+    return send(res, 200, { users });
+  },
+
+  'POST /api/admin/update': async (req, res, body) => {
+    const h = req.headers['authorization'] || '';
+    if (!h.startsWith('Bearer ADMIN_')) return send(res, 403, { error: 'دسترسی غیرمجاز' });
+    const { id, newScore, deleteUser } = body;
+    
+    if (deleteUser) {
+      db.prepare('DELETE FROM users WHERE id = ?').run(id);
+      db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id);
+      return send(res, 200, { ok: true, message: 'کاربر حذف شد' });
+    } else if (newScore !== undefined) {
+      db.prepare('UPDATE users SET best_score = ? WHERE id = ?').run(Number(newScore), id);
+      return send(res, 200, { ok: true, message: 'امتیاز تغییر کرد' });
+    }
+    return send(res, 400, { error: 'دستور نامشخص' });
   }
 };
 
