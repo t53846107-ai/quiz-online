@@ -255,6 +255,18 @@
       text-align: right;
     }
 
+    .top-player {
+      width: 100%;
+      display: none;
+      background: linear-gradient(45deg, rgba(241,196,15,0.25), rgba(230,126,34,0.25));
+      border: 1px solid rgba(241,196,15,0.5);
+      border-radius: 10px;
+      padding: 8px 12px;
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--accent-yellow);
+    }
+
     .lb-item {
       display: flex;
       justify-content: space-between;
@@ -302,6 +314,7 @@
         <span class="user-info" id="display-username">کاربر</span>
         <span class="high-score-badge" id="display-highscore">رکورد شما: ۰</span>
       </div>
+      <div class="top-player" id="top-player"></div>
       <div class="chalk-title" style="font-size: 18px;">انتخاب پایه تحصیلی</div>
       <div class="grade-container">
         <button class="btn" onclick="startTutorial(7)"><i class="fa-solid fa-book-open"></i> پایه هفتم راهنمایی</button>
@@ -495,6 +508,19 @@
       playSound('click');
       document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
       document.getElementById(screenId).classList.add('active');
+      if (screenId === 'menu-screen') loadTopPlayer();
+    }
+
+    // نمایش نفر اول لیگ در صفحه‌ی اصلی
+    async function loadTopPlayer() {
+      const el = document.getElementById('top-player');
+      try {
+        const data = await api('/api/league');
+        const first = data.top && data.top[0];
+        if (!first) { el.style.display = 'none'; return; }
+        el.textContent = '👑 نفر اول لیگ: ' + first.name + ' — ' + first.score + ' امتیاز';
+        el.style.display = 'block';
+      } catch (e) { el.style.display = 'none'; }
     }
 
     function toggleAuthMode() {
@@ -659,7 +685,18 @@
           row.className = 'lb-item';
           const left = document.createElement('span');
           left.textContent = u.name + ' — ' + u.best + ' امتیاز';
+          row.style.cssText = 'align-items:center; gap:6px;';
+          left.style.flexGrow = '1';
           row.appendChild(left);
+          const inp = document.createElement('input');
+          inp.type = 'number'; inp.min = '0'; inp.placeholder = 'امتیاز';
+          inp.style.cssText = 'width:70px; padding:6px; border-radius:8px; border:1px solid #8b5a2b; background:rgba(0,0,0,0.6); color:#fff; text-align:center; user-select:text;';
+          const setBtn = document.createElement('button');
+          setBtn.className = 'btn';
+          setBtn.style.cssText = 'width:auto; padding:6px 12px; margin:0;';
+          setBtn.textContent = 'ثبت';
+          setBtn.onclick = () => setUserScore(u, inp.value);
+          row.appendChild(inp); row.appendChild(setBtn);
           if (u.name !== currentUser) {            // حساب خودِ مدیر حذف‌شدنی نیست
             const del = document.createElement('button');
             del.className = 'btn';
@@ -671,6 +708,15 @@
           box.appendChild(row);
         });
       } catch (e) { box.textContent = e.message; }
+    }
+
+    async function setUserScore(u, v) {
+      if (v === '' || isNaN(Number(v))) { alert('یک عدد وارد کنید.'); return; }
+      try {
+        await api('/api/admin/set-score', 'POST', { key: u.key, score: Number(v) });
+        if (u.name === currentUser) { currentHighScore = Number(v); localStorage.setItem('ata_quiz_highscore', currentHighScore); refreshScoreLabels(); }
+        openAdmin();
+      } catch (e) { alert(e.message); }
     }
 
     async function deleteUser(u) {
