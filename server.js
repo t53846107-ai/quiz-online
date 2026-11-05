@@ -57,6 +57,7 @@ function redisStore() {
     async getSession(tokenHash) { return await cmd('GET', 'sess:' + tokenHash); },
     async deleteSession(tokenHash) { await cmd('DEL', 'sess:' + tokenHash); },
     async setBest(user, best) {
+      if (best <= 0) { await pipe([['HSET', 'bests', user.key, '0'], ['ZREM', 'lb', memberFor(user.key, user.name)]]); return; }
       await pipe([['HSET', 'bests', user.key, String(best)], ['ZADD', 'lb', String(scoreFor(best, user.created)), memberFor(user.key, user.name)]]);
     },
     async leaderboard(limit) {
@@ -430,7 +431,8 @@ let KEY='';
 async function call(p,b){const r=await fetch(p,{method:'POST',headers:{'Content-Type':'application/json','X-Admin-Key':KEY},body:JSON.stringify(b||{})});const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||'خطا');return j}
 function msg(t){document.getElementById('msg').textContent=t||''}
 async function load(){const v=document.getElementById('k').value;if(v)KEY=v;msg('در حال بارگذاری...');try{const d=await call('/api/admin/users');render(d.users);msg(d.users.length+' کاربر');document.getElementById('tools').style.display='block'}catch(e){msg(e.message)}}
-function render(users){const l=document.getElementById('list');l.textContent='';users.forEach(u=>{const row=document.createElement('div');row.className='row';const s=document.createElement('span');s.textContent=u.name+' — '+u.best+' امتیاز';const b=document.createElement('button');b.className='danger';b.textContent='حذف';b.onclick=()=>del(u);row.appendChild(s);row.appendChild(b);l.appendChild(row)})}
+function render(users){const l=document.getElementById('list');l.textContent='';users.forEach(u=>{const row=document.createElement('div');row.className='row';const s=document.createElement('span');s.textContent=u.name+' — '+u.best+' امتیاز';const i=document.createElement('input');i.type='number';i.min='0';i.placeholder='امتیاز';i.style.width='90px';const sb=document.createElement('button');sb.textContent='ثبت';sb.onclick=()=>setScore(u,i.value);const b=document.createElement('button');b.className='danger';b.textContent='حذف';b.onclick=()=>del(u);row.appendChild(s);row.appendChild(i);row.appendChild(sb);row.appendChild(b);l.appendChild(row)})}
+async function setScore(u,v){if(v===''||isNaN(Number(v))){msg('یک عدد وارد کنید.');return}try{await call('/api/admin/set-score',{key:u.key,score:Number(v)});await load();msg('امتیاز «'+u.name+'» روی '+Number(v)+' تنظیم شد.')}catch(e){msg(e.message)}}
 async function del(u){if(!confirm('حساب «'+u.name+'» برای همیشه حذف شود؟'))return;try{await call('/api/admin/delete',{key:u.key});await load()}catch(e){msg(e.message)}}
 async function resetAll(){if(!confirm('امتیاز همه صفر شود؟ حساب‌ها حذف نمی‌شوند.'))return;try{await call('/api/admin/reset-scores');await load()}catch(e){msg(e.message)}}
 </script></body></html>`;
@@ -572,6 +574,19 @@ const routes = {
     if (key === adminUserKey()) return send(res, 400, { error: 'حساب مدیر حذف نمی‌شود.' });
     await store.deleteUser(key);
     userCache.delete(key); games.delete(key); lbCache.at = 0;
+    return send(res, 200, { ok: true });
+  },
+
+  'POST /api/admin/set-score': async (req, res, body) => {
+    if (!(await adminGuard(req, res))) return;
+    const key = String(body.key || '');
+    const score = Number(body.score);
+    if (!key) return send(res, 400, { error: 'کلید کاربر خالی است.' });
+    if (!Number.isInteger(score) || score < 0 || score > 1000000) return send(res, 400, { error: 'امتیاز باید عدد صحیح بین ۰ تا ۱٬۰۰۰٬۰۰۰ باشد.' });
+    const user = await store.getUser(key);
+    if (!user) return send(res, 404, { error: 'کاربر پیدا نشد.' });
+    await store.setBest(user, score);
+    userCache.delete(key); lbCache.at = 0;
     return send(res, 200, { ok: true });
   },
 
