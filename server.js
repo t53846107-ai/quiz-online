@@ -48,10 +48,10 @@ function redisStore() {
       return ok === 'OK';
     },
     async getUser(key) {
-      const [raw, best] = await pipe([['GET', 'user:' + key], ['HGET', 'bests', key]]);
+      const [raw, best, wins] = await pipe([['GET', 'user:' + key], ['HGET', 'bests', key], ['HGET', 'wins', key]]);
       if (!raw) return null;
       const u = JSON.parse(raw);
-      return { key, name: u.name, salt: u.salt, hash: u.hash, created: u.created, best: Number(best || 0) };
+      return { key, name: u.name, salt: u.salt, hash: u.hash, created: u.created, best: Number(best || 0), wins: Number(wins || 0) };
     },
     async createSession(tokenHash, userKey) { await cmd('SET', 'sess:' + tokenHash, userKey, 'EX', SESSION_TTL); },
     async getSession(tokenHash) { return await cmd('GET', 'sess:' + tokenHash); },
@@ -59,6 +59,23 @@ function redisStore() {
     async setBest(user, best) {
       if (best <= 0) { await pipe([['HSET', 'bests', user.key, '0'], ['ZREM', 'lb', memberFor(user.key, user.name)]]); return; }
       await pipe([['HSET', 'bests', user.key, String(best)], ['ZADD', 'lb', String(scoreFor(best, user.created)), memberFor(user.key, user.name)]]);
+    },
+    async addWin(user) {
+      const n = Number(await cmd('HINCRBY', 'wins', user.key, '1'));
+      await cmd('ZADD', 'lbw', String(scoreFor(n, user.created)), memberFor(user.key, user.name));
+      return n;
+    },
+    async leaderboardWins(limit) {
+      const flat = (await cmd('ZREVRANGE', 'lbw', '0', String(limit - 1), 'WITHSCORES')) || [];
+      const out = [];
+      for (let i = 0; i < flat.length; i += 2) {
+        const m = flat[i]; out.push({ name: m.slice(m.indexOf('|') + 1), score: Math.floor(Number(flat[i + 1])) });
+      }
+      return out;
+    },
+    async rankOfWins(user) {
+      const r = await cmd('ZREVRANK', 'lbw', memberFor(user.key, user.name));
+      return r === null || r === undefined ? null : r + 1;
     },
     async leaderboard(limit) {
       const flat = (await cmd('ZREVRANGE', 'lb', '0', String(limit - 1), 'WITHSCORES')) || [];
@@ -91,9 +108,9 @@ function redisStore() {
     async deleteUser(key) {
       const raw = await cmd('GET', 'user:' + key);
       let name = key; if (raw) { try { name = JSON.parse(raw).name; } catch (e) {} }
-      await pipe([['DEL', 'user:' + key], ['HDEL', 'bests', key], ['ZREM', 'lb', memberFor(key, name)]]);
+      await pipe([['DEL', 'user:' + key], ['HDEL', 'bests', key], ['ZREM', 'lb', memberFor(key, name)], ['HDEL', 'wins', key], ['ZREM', 'lbw', memberFor(key, name)]]);
     },
-    async resetScores() { await pipe([['DEL', 'bests'], ['DEL', 'lb']]); }
+    async resetScores() { await pipe([['DEL', 'bests'], ['DEL', 'lb'], ['DEL', 'wins'], ['DEL', 'lbw']]); }
   };
 }
 
@@ -117,7 +134,8 @@ function sqliteStore() {
     );
     CREATE INDEX IF NOT EXISTS idx_users_score ON users(best_score DESC);
   `);
-  const toUser = (r) => r && { key: r.name_key, name: r.name, salt: r.salt, hash: r.hash, created: r.created_at, best: r.best_score };
+  try { db.exec('ALTER TABLE users ADD COLUMN wins INTEGER NOT NULL DEFAULT 0'); } catch (e) { /* ستون از قبل هست */ }
+  const toUser = (r) => r && { key: r.name_key, name: r.name, salt: r.salt, hash: r.hash, created: r.created_at, best: r.best_score, wins: r.wins || 0 };
   return {
     kind: 'sqlite',
     async createUser(key, name, salt, hash) {
@@ -135,6 +153,18 @@ function sqliteStore() {
     },
     async deleteSession(tokenHash) { db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(tokenHash); },
     async setBest(user, best) { db.prepare('UPDATE users SET best_score = ? WHERE name_key = ?').run(best, user.key); },
+    async addWin(user) {
+      db.prepare('UPDATE users SET wins = wins + 1 WHERE name_key = ?').run(user.key);
+      return db.prepare('SELECT wins FROM users WHERE name_key = ?').get(user.key).wins;
+    },
+    async leaderboardWins(limit) {
+      return db.prepare('SELECT name, wins FROM users WHERE wins > 0 ORDER BY wins DESC, created_at ASC LIMIT ?').all(limit)
+        .map((r) => ({ name: r.name, score: r.wins }));
+    },
+    async rankOfWins(user) {
+      if (!user.wins) return null;
+      return 1 + db.prepare('SELECT COUNT(*) AS c FROM users WHERE wins > ?').get(user.wins).c;
+    },
     async leaderboard(limit) {
       return db.prepare('SELECT name, best_score FROM users WHERE best_score > 0 ORDER BY best_score DESC, created_at ASC LIMIT ?').all(limit)
         .map((r) => ({ name: r.name, score: r.best_score }));
@@ -153,7 +183,7 @@ function sqliteStore() {
       db.prepare('DELETE FROM sessions WHERE user_id = ?').run(u.id);
       db.prepare('DELETE FROM users WHERE id = ?').run(u.id);
     },
-    async resetScores() { db.prepare('UPDATE users SET best_score = 0').run(); }
+    async resetScores() { db.prepare('UPDATE users SET best_score = 0, wins = 0').run(); }
   };
 }
 
@@ -171,6 +201,7 @@ async function getUserCached(key) {
   return u;
 }
 let lbCache = { at: 0, data: null };
+let wlbCache = { at: 0, data: null };   // جدول «بیشترین برد»
 
 // ---------- بانک سوال (فقط روی سرور؛ جواب‌ها هیچ‌وقت به کلاینت نمی‌رسن) ----------
 const questionBank = {
@@ -437,6 +468,102 @@ async function del(u){if(!confirm('حساب «'+u.name+'» برای همیشه �
 async function resetAll(){if(!confirm('امتیاز همه صفر شود؟ حساب‌ها حذف نمی‌شوند.'))return;try{await call('/api/admin/reset-scores');await load()}catch(e){msg(e.message)}}
 </script></body></html>`;
 
+// ---------- بازی آنلاین دو نفره (۳۰ ثانیه، هر جواب درست +۱۰ و هر جواب غلط -۱۰) ----------
+const ONLINE_SECONDS = 30;
+const ONLINE_COUNTDOWN_MS = 5000;   // شمارش معکوس قبل از شروع
+const ONLINE_GRACE_MS = 2000;       // تحمل تأخیر شبکه بعد از پایان ۳۰ ثانیه
+const QUEUE_STALE_MS = 7000;        // اگر بازیکنِ منتظر این‌قدر درخواست نفرستد، رفته حساب می‌شود
+const onlineQueue = new Map();      // userKey -> { user, seen }
+const onlineMatches = new Map();    // matchId -> match
+const userMatch = new Map();        // userKey -> matchId
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, e] of onlineQueue) if (now - e.seen > 30e3) onlineQueue.delete(k);
+}, 15e3).unref();
+
+function randomOnlineQuestion(avoid) {
+  const grades = Object.keys(questionBank);
+  let pick;
+  for (let i = 0; i < 5; i++) {
+    pick = pickQuestion(grades[crypto.randomInt(grades.length)]);
+    if (!avoid || pick.q !== avoid.q) break;
+  }
+  return pick;
+}
+
+// هر دو بازیکن دقیقاً همان دنباله‌ی سوال‌ها را می‌بینند تا عادلانه باشد
+function onlineQuestionAt(m, idx) {
+  while (m.seq.length <= idx) m.seq.push(randomOnlineQuestion(m.seq[m.seq.length - 1]));
+  return m.seq[idx];
+}
+
+function publicQuestion(m, idx) {
+  const it = onlineQuestionAt(m, idx);
+  return { n: idx, text: it.q.q, subject: it.q.subject, opts: it.opts };
+}
+
+function createMatch(a, b) {
+  const id = crypto.randomBytes(8).toString('hex');
+  const now = Date.now();
+  const m = {
+    id, seq: [], finished: false, result: null,
+    startAt: now + ONLINE_COUNTDOWN_MS,
+    endAt: now + ONLINE_COUNTDOWN_MS + ONLINE_SECONDS * 1000,
+    players: {}
+  };
+  for (const u of [a, b]) m.players[u.key] = { key: u.key, name: u.name, best: u.best || 0, score: 0, idx: 0 };
+  onlineMatches.set(id, m);
+  userMatch.set(a.key, id); userMatch.set(b.key, id);
+  m.timer = setTimeout(() => { finalizeMatch(m).catch((e) => console.error(e)); }, ONLINE_COUNTDOWN_MS + ONLINE_SECONDS * 1000 + ONLINE_GRACE_MS);
+  return m;
+}
+
+async function finalizeMatch(m) {
+  if (m.finished) return;
+  m.finished = true;                  // همین‌جا و قبل از هر await تا دوبار حساب نشود
+  clearTimeout(m.timer);
+  const [p1, p2] = Object.values(m.players);
+  const winnerKey = p1.score === p2.score ? null : (p1.score > p2.score ? p1.key : p2.key);
+  m.result = { winnerKey };
+  setTimeout(() => {                  // نتیجه تا ۵ دقیقه بعد قابل خواندن است
+    onlineMatches.delete(m.id);
+    for (const k of Object.keys(m.players)) if (userMatch.get(k) === m.id) userMatch.delete(k);
+  }, 5 * 60e3).unref();
+  if (winnerKey) {
+    const u = await getUserCached(winnerKey);
+    if (u) { u.wins = await store.addWin(u); wlbCache.at = 0; }
+  }
+}
+
+async function matchView(m, key) {
+  const me = m.players[key];
+  const opp = Object.values(m.players).find((p) => p.key !== key);
+  const now = Date.now();
+  const view = { status: 'match', me: { name: me.name, best: me.best }, opponent: { name: opp.name, best: opp.best }, score: me.score };
+  if (m.finished) {
+    view.phase = 'finished';
+    const w = m.result.winnerKey;
+    const mu = await getUserCached(key);
+    view.result = { myScore: me.score, oppScore: opp.score, outcome: w === null ? 'draw' : (w === key ? 'win' : 'lose'), myWins: mu ? (mu.wins || 0) : 0 };
+  } else if (now < m.startAt) {
+    view.phase = 'countdown'; view.startsInMs = m.startAt - now;
+  } else if (now < m.endAt) {
+    view.phase = 'playing'; view.endsInMs = m.endAt - now; view.question = publicQuestion(m, me.idx);
+  } else {
+    view.phase = 'waiting';
+  }
+  return view;
+}
+
+async function myActiveMatch(u) {
+  const mid = userMatch.get(u.key);
+  const m = mid && onlineMatches.get(mid);
+  if (!m) { userMatch.delete(u.key); return null; }
+  if (!m.finished && Date.now() >= m.endAt + ONLINE_GRACE_MS) await finalizeMatch(m);
+  return m;
+}
+
 // ---------- مسیرها ----------
 const routes = {
   'POST /api/register': async (req, res, body) => {
@@ -498,7 +625,7 @@ const routes = {
     if (token) {
       const th = sha256(token);
       const u = await authUser(req);
-      if (u) games.delete(u.key);
+      if (u) { games.delete(u.key); onlineQueue.delete(u.key); }
       sessionCache.delete(th);
       await store.deleteSession(th);
     }
@@ -593,12 +720,84 @@ const routes = {
   'POST /api/admin/reset-scores': async (req, res) => {
     if (!(await adminGuard(req, res))) return;
     await store.resetScores();
-    userCache.clear(); games.clear(); lbCache.at = 0;
+    userCache.clear(); games.clear(); lbCache.at = 0; wlbCache.at = 0;
     return send(res, 200, { ok: true });
+  },
+
+  'POST /api/online/find': async (req, res) => {
+    const u = await authUser(req);
+    if (!u) return send(res, 401, { error: 'unauthorized' });
+    if (rateLimited('on:' + u.key, 400, 60e3)) return send(res, 429, { error: 'درخواست‌ها زیاد است. کمی صبر کنید.' });
+
+    const cur = await myActiveMatch(u);
+    if (cur && !cur.finished) { onlineQueue.delete(u.key); return send(res, 200, await matchView(cur, u.key)); }
+    if (cur && cur.finished) userMatch.delete(u.key);       // بازی قبلی تمام شده؛ بازی تازه شروع می‌شود
+
+    const now = Date.now();
+    for (const [k, e] of onlineQueue) {
+      if (k !== u.key && now - e.seen < QUEUE_STALE_MS) {
+        onlineQueue.delete(k); onlineQueue.delete(u.key);
+        const m = createMatch(u, e.user);
+        return send(res, 200, await matchView(m, u.key));
+      }
+    }
+    onlineQueue.set(u.key, { user: u, seen: now });
+    return send(res, 200, { status: 'searching' });
+  },
+
+  'POST /api/online/status': async (req, res) => {
+    const u = await authUser(req);
+    if (!u) return send(res, 401, { error: 'unauthorized' });
+    if (rateLimited('on:' + u.key, 400, 60e3)) return send(res, 429, { error: 'درخواست‌ها زیاد است. کمی صبر کنید.' });
+    const m = await myActiveMatch(u);
+    if (m) return send(res, 200, await matchView(m, u.key));
+    const e = onlineQueue.get(u.key);
+    if (e) { e.seen = Date.now(); return send(res, 200, { status: 'searching' }); }
+    return send(res, 200, { status: 'none' });
+  },
+
+  'POST /api/online/cancel': async (req, res) => {
+    const u = await authUser(req);
+    if (!u) return send(res, 401, { error: 'unauthorized' });
+    onlineQueue.delete(u.key);
+    return send(res, 200, { ok: true });
+  },
+
+  'POST /api/online/answer': async (req, res, body) => {
+    const u = await authUser(req);
+    if (!u) return send(res, 401, { error: 'unauthorized' });
+    if (rateLimited('on:' + u.key, 400, 60e3)) return send(res, 429, { error: 'درخواست‌ها زیاد است. کمی صبر کنید.' });
+    const m = await myActiveMatch(u);
+    if (!m || m.finished) return send(res, 400, { error: 'بازی فعالی وجود ندارد.' });
+    const now = Date.now();
+    if (now < m.startAt - 300 || now > m.endAt + ONLINE_GRACE_MS) return send(res, 400, { error: 'زمان بازی تمام شده است.' });
+
+    const me = m.players[u.key];
+    const n = Number(body.n);
+    if (!Number.isInteger(n) || n !== me.idx) {            // درخواست تکراری یا قدیمی: فقط وضعیت فعلی را برگردان
+      return send(res, 200, { stale: true, score: me.score, question: publicQuestion(m, me.idx) });
+    }
+    const cur = onlineQuestionAt(m, me.idx);
+    const correct = body.answer === cur.q.ans;
+    me.score += correct ? POINTS : -POINTS;
+    me.idx++;
+    return send(res, 200, { correct, correctAnswer: cur.q.ans, score: me.score, question: publicQuestion(m, me.idx) });
   },
 
   'GET /api/league': async (req, res) => {
     const me = await authUser(req);
+    if (new URL(req.url, 'http://x').searchParams.get('type') === 'wins') {
+      if (!wlbCache.data || Date.now() - wlbCache.at > 15e3) {
+        wlbCache = { at: Date.now(), data: await store.leaderboardWins(100) };
+      }
+      let myRank = null;
+      if (me && me.wins > 0) myRank = await store.rankOfWins(me);
+      return send(res, 200, {
+        type: 'wins',
+        top: wlbCache.data.map((r, i) => ({ rank: i + 1, name: r.name, score: r.score })),
+        me: me ? { name: me.name, score: me.wins || 0, rank: myRank } : null
+      });
+    }
     if (!lbCache.data || Date.now() - lbCache.at > 15e3) {
       lbCache = { at: Date.now(), data: await store.leaderboard(100) };
     }
@@ -612,7 +811,7 @@ const routes = {
 };
 
 // ---------- فایل‌های استاتیک ----------
-const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.svg': 'image/svg+xml', '.json': 'application/json' };
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.svg': 'image/svg+xml', '.json': 'application/json' };
 function serveStatic(req, res) {
   let p = decodeURIComponent(new URL(req.url, 'http://x').pathname);
   if (p === '/') p = '/index.html';
