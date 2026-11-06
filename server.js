@@ -1078,7 +1078,7 @@ const routes = {
     }
     const cur = onlineQuestionAt(m, me.idx);
     const correct = body.answer === cur.q.ans;
-    me.score += correct ? POINTS : -POINTS;
+    me.score = Math.max(0, me.score + (correct ? POINTS : -POINTS));
     me.idx++;
     return send(res, 200, { correct, correctAnswer: cur.q.ans, score: me.score, question: publicQuestion(m, me.idx) });
   },
